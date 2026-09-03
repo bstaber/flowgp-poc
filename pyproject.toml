@@ -1,0 +1,21 @@
+[project]
+name = "flowgp"
+version = "0.1.0"
+description = "FLOWGP: Conditioning Gaussian Processes on Almost Anything (Moss et al., 2026) - guided probability-flow ODE sampling, GPyTorch-compatible"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "gpytorch>=1.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "matplotlib>=3.8",
+    "ruff>=0.16.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.12"]
+build-backend = "uv_build"
