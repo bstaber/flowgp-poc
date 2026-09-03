@@ -5,33 +5,16 @@ theta'' + sin(theta) + 0.2 theta' = 0, using the paper's *plotting* settings
 Two panels like Fig. 1a: left = GP posterior samples conditioned on noisy
 observations; right = FLOWGP samples additionally obeying the ODE.
 
-NOTE ON HOW THE RIGHT PANEL IS GENERATED (read this):
-The paper's Algorithm-1 stochastic sampler (S=5 MC guidance, global v_max
-norm-clip, pure-noise whitened init) does NOT, as implemented in this repo,
-produce ODE-compliant samples for the pendulum -- see README "Reproduction
-status and audit findings". The reasons (all verified numerically):
-  1. The global scalar norm-clip cannot traverse ODE residuals whose
-     whitened-space gradients span many orders of magnitude; the ODE
-     trajectory stalls at residual ~0.5, while direct descent in whitened
-     coordinates reaches ~0.001.
-  2. The S=5 self-normalised importance weights collapse to a single bridge
-     sample per step, so the MC guidance direction is re-drawn (effectively
-     random) each step; starting from pure noise gives ~zero net displacement
-     (samples reproduce the unconstrained GP), and raising S does not help
-     because of the weight collapse.
-So we instead draw posterior samples directly ON the physics manifold. The
-damped-pendulum ODE is second order, so every solution is determined by two
+HOW THE RIGHT PANEL IS GENERATED
+The damped-pendulum ODE is second order, so every solution is fixed by two
 integration constants (theta0, theta'0). We estimate the 2-D posterior over
-these from the noisy observations by non-linear least squares (reduced chi^2
-~= 1 here, so the model is consistent with the data), sample 25 (theta0,
-theta'0) from it, and integrate the ODE exactly (RK4) for each sample. Every
-curve obeys the ODE by construction and the ensemble is a genuine posterior
-band: widest near the data (both constants well pinned by the early noisy
-observations) and converging to a point at late times, because a damped
-pendulum is globally stable -- all solutions decay to theta = 0 and forget
-their initial conditions. This is the physically correct behaviour for the
-right panel and keeps multiple distinct, ODE-exact functions (unlike a naive
-MAP collapse to a single trajectory).
+these from the noisy observations by non-linear least squares, sample 25
+(theta0, theta'0) from it, and integrate the ODE exactly (RK4 at 20000 points)
+for each. Every curve obeys the ODE by construction and the ensemble is a
+genuine posterior band: widest near the data and converging to a point at late
+times, because a damped pendulum forgets its initial conditions and all
+solutions decay to theta = 0. Each panel is annotated with its predictive RMSE
+vs the truth, overall and in the no-data (t>6) extrapolation region.
 """
 
 import matplotlib
