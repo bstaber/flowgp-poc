@@ -83,15 +83,10 @@ with the paper's plotting settings (σ²=0.15², grid m=250, 25 samples).
   (t>6) extrapolation region; the physics constraint typically cuts the
   extrapolation RMSE by an order of magnitude.
 
-Because the damped-pendulum ODE is second order, every physics-compliant
-trajectory is fixed by its two integration constants `(theta0, theta'0)`. The
-right panel therefore draws a 2-D posterior over these initial conditions from
-the noisy observations (non-linear least squares, reduced χ² ≈ 1) and integrates
-the ODE exactly (RK4) for each sample. Every curve obeys the ODE by
-construction, and the ensemble is a genuine posterior band: widest where the
-data leaves the most uncertainty, narrowing to a point at late times as the
-globally-stable damped pendulum forgets its initial conditions and decays to
-θ = 0.
+The right panel uses the implemented `FlowGPSampler` with a `GaussianResidual`
+physics likelihood built from the finite-difference pendulum residual. This is
+the same whitened probability-flow ODE and Monte-Carlo guidance path exposed by
+the public API; the example does not use a separate on-manifold sampler.
 
 ## What is implemented
 
@@ -121,6 +116,5 @@ reproduce the GPyTorch predictive distribution.
 - Importance-weight collapse is possible in very high dimensions.
 - Hyperparameters are fitted on the linear-Gaussian part only.
 - The stochastic MC-guidance path (`FlowGPSampler`) is most reliable for smooth
-  constraints; for sharp PDE residuals the shipped pendulum example samples
-  directly on the physics manifold (see above) rather than through the ODE
-  guidance.
+  constraints; sharp PDE residuals may require tuning the residual scale and
+  integration settings.

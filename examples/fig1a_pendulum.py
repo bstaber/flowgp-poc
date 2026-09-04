@@ -5,16 +5,10 @@ theta'' + sin(theta) + 0.2 theta' = 0, using the paper's *plotting* settings
 Two panels like Fig. 1a: left = GP posterior samples conditioned on noisy
 observations; right = FLOWGP samples additionally obeying the ODE.
 
-HOW THE RIGHT PANEL IS GENERATED
-The damped-pendulum ODE is second order, so every solution is fixed by two
-integration constants (theta0, theta'0). We estimate the 2-D posterior over
-these from the noisy observations by non-linear least squares, sample 25
-(theta0, theta'0) from it, and integrate the ODE exactly (RK4 at 20000 points)
-for each. Every curve obeys the ODE by construction and the ensemble is a
-genuine posterior band: widest near the data and converging to a point at late
-times, because a damped pendulum forgets its initial conditions and all
-solutions decay to theta = 0. Each panel is annotated with its predictive RMSE
-vs the truth, overall and in the no-data (t>6) extrapolation region.
+The right panel uses the FlowGPSampler with a Gaussian physics likelihood over
+the finite-difference pendulum residual. Each panel is annotated with its
+predictive RMSE vs the truth, overall and in the no-data (t>6) extrapolation
+region.
 """
 
 import matplotlib
@@ -22,9 +16,9 @@ import matplotlib
 matplotlib.use("Agg")
 import gpytorch
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from scipy.optimize import least_squares
+
+from flowgp import GaussianResidual, from_gpytorch_posterior, pendulum_residual
 
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(7)
@@ -35,7 +29,6 @@ SIGMA2 = 0.15**2  # qualitative/plotting setting (App. H.2)
 SIGMA = SIGMA2**0.5
 M = 250  # plotting grid
 N_SAMPLES = 25
-N_ODE = 20000  # RK4 resolution for the integrated trajectories
 
 
 def solve_pendulum(n_grid=4000, theta0=2.0):
@@ -54,72 +47,6 @@ def solve_pendulum(n_grid=4000, theta0=2.0):
         k4 = deriv(y + dt * k3)
         ys[i + 1] = y + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
     return torch.linspace(0, T_HORIZON, n_grid), ys[:, 0]
-
-
-def solve_pendulum_ode(theta0, d0, t_eval, n=N_ODE):
-    """RK4 solve of the damped pendulum, sampled at t_eval (seconds in [0, 30]).
-
-    Returns the solution theta(t) interpolated onto t_eval. Because theta'' +
-    sin theta + beta theta' = 0 is integrated at very fine resolution, the result
-    is an exact ODE solution (finite-difference residual ~= 0 on any coarser
-    grid, no worse than the true trajectory's own discretisation error).
-    """
-    dt = T_HORIZON / (n - 1)
-    y = np.array([theta0, d0], dtype=float)
-    ys = np.empty((n, 2))
-    ys[0] = y
-    for i in range(n - 1):
-
-        def deriv(yy):
-            return np.array([yy[1], -np.sin(yy[0]) - BETA_DAMP * yy[1]])
-
-        k1 = deriv(y)
-        k2 = deriv(y + dt / 2 * k1)
-        k3 = deriv(y + dt / 2 * k2)
-        k4 = deriv(y + dt * k3)
-        y = y + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-        ys[i + 1] = y
-    teval = np.linspace(0, T_HORIZON, n)
-    return np.interp(t_eval, teval, ys[:, 0])
-
-
-def fit_initial_conditions(train_t, train_y):
-    """2-D posterior over (theta0, theta'0) from the noisy observations.
-
-    Nonlinear least squares of the ODE solution against the noisy data (scaled
-    residuals by the measurement sigma), linearised to a 2-D Gaussian via the
-    Jacobian. Returns (ic_hat, cov).
-    """
-    t_np = train_t.numpy()
-    y_np = train_y.numpy()
-
-    def resid(ic):
-        return (solve_pendulum_ode(ic[0], ic[1], t_np) - y_np) / SIGMA
-
-    opt = least_squares(
-        resid,
-        np.array([2.0, 0.0]),
-        method="lm",
-        xtol=1e-12,
-        ftol=1e-12,
-        gtol=1e-12,
-        max_nfev=200,
-    )
-    ic_hat = opt.x
-    dof = len(y_np) - 2
-    J = opt.jac
-    cov = np.linalg.inv(J.T @ J + 1e-9 * np.eye(2)) * (np.sum(opt.fun**2) / dof)
-    return ic_hat, cov
-
-
-def pendulum_posterior_samples(train_t, train_y, n_samples=N_SAMPLES, seed=3):
-    """Sample ODE-compliant trajectories from the on-manifold posterior."""
-    ic_hat, cov = fit_initial_conditions(train_t, train_y)
-    grid_t = torch.linspace(0, T_HORIZON, M).numpy()
-    rng = np.random.RandomState(seed)
-    ics = rng.multivariate_normal(ic_hat, cov, size=n_samples)
-    sols = np.stack([solve_pendulum_ode(ic[0], ic[1], grid_t) for ic in ics])
-    return torch.tensor(sols)
 
 
 class ExactGPModel(gpytorch.models.ExactGP):
@@ -163,7 +90,7 @@ def fit_gp(train_x, train_y):
 
 
 def main():
-    t_all, theta_all = solve_pendulum()
+    _, theta_all = solve_pendulum()
 
     # irregular training observations with the plotting-level noise, restricted
     # to the early window t < 6 (as in the paper's Figure 1a): beyond that the
@@ -189,8 +116,11 @@ def main():
     z = torch.randn(N_SAMPLES, M, dtype=torch.float64)
     gp_samples = mean + z @ chol.T
 
-    # ---- right panel: FLOWGP (on-manifold) posterior samples ----
-    samples = pendulum_posterior_samples(train_t, train_y)
+    # ---- right panel: FLOWGP samples guided by the pendulum residual ----
+    dt = T_HORIZON / (M - 1)
+    physics = GaussianResidual(pendulum_residual(BETA_DAMP, dt), sigma=1e-3)
+    sampler = from_gpytorch_posterior(pred, physics, num_steps=1000, num_mc=5)
+    samples = sampler.sample(batch_shape=N_SAMPLES)
 
     # ---- predictive RMSE (vs truth), overall and no-data (t>6) ----
     gp_mean = mean
@@ -222,7 +152,7 @@ def main():
         transform=axes[0].transAxes,
         fontsize=9,
         va="top",
-        bbox=dict(boxstyle="round,pad=0.3", fc="w", ec="C0", alpha=0.9),
+        bbox={"boxstyle": "round,pad=0.3", "fc": "w", "ec": "C0", "alpha": 0.9},
     )
 
     axes[1].set_title(
@@ -241,7 +171,7 @@ def main():
         fontsize=9,
         va="top",
         color="k",
-        bbox=dict(boxstyle="round,pad=0.3", fc="w", ec="C1", alpha=0.9),
+        bbox={"boxstyle": "round,pad=0.3", "fc": "w", "ec": "C1", "alpha": 0.9},
     )
 
     fig.tight_layout()
