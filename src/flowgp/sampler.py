@@ -85,32 +85,49 @@ class FlowGPSampler:
         m = mean.numel()
         self.mean = mean.reshape(-1).to(self.device, dtype)
         cov = cov.to(self.device, dtype)
-        # Cholesky factorisation K = L L^T (one-off O(m^3)); W^{-1}(.) = L(.) + m.
-        # Jitter scaled to the median diagonal for poorly conditioned posteriors;
-        # escalate geometrically if factorisation fails.
+
+        # Cholesky factorisation K = L L^T.
+        # Use a genuinely small relative jitter and escalate only if needed.
         diag = torch.diag(cov)
         pos = diag[diag > 0]
-        base = (
-            torch.median(pos).clamp_min(1e-12)
-            if pos.numel() > 0
-            else torch.tensor(1e-12, device=cov.device, dtype=cov.dtype)
+
+        if pos.numel() > 0:
+            scale = torch.median(pos)
+        else:
+            scale = (
+                cov.abs()
+                .max()
+                .clamp_min(torch.tensor(1.0, device=cov.device, dtype=cov.dtype))
+            )
+
+        # Initial jitter: ~1e-8 of a representative marginal variance.
+        base_jitter = torch.maximum(
+            scale * 1e-8,
+            cov.abs().max() * 1e-12,
         )
-        # add an absolute floor scaled to the overall magnitude of the matrix,
-        # so tiny negative eigenvalues from lazy evaluation are also covered
-        base = torch.maximum(base, cov.abs().max() * 1e-8)
+
         eye = torch.eye(m, device=self.device, dtype=dtype)
+
         last_err = None
-        for factor in (1.0, 1e2, 1e4, 1e6, 1e8):
-            jitter = base * factor
+        for factor in (1.0, 1e2, 1e4, 1e6):
+            jitter = base_jitter * factor
             try:
                 self.chol = torch.linalg.cholesky(cov + jitter * eye)
+                self.jitter = jitter
                 break
-            except Exception as e:  # pragma: no cover - depends on input
+            except RuntimeError as e:
                 last_err = e
         else:
-            raise last_err
+            raise RuntimeError(
+                "Cholesky factorisation failed even after jitter escalation."
+            ) from last_err
         self.ts = time_grid(
-            self.num_steps, self.beta0, self.beta1, device=self.device, dtype=dtype
+            self.num_steps,
+            self.beta0,
+            self.beta1,
+            self.tau_end,
+            device=self.device,
+            dtype=dtype,
         )
 
     # -- coordinate maps ---------------------------------------------------

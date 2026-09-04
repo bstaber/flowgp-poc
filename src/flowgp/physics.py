@@ -85,18 +85,14 @@ def _trim(f0: torch.Tensor, axis: int, n: int = 1) -> torch.Tensor:
 
 
 def pendulum_residual(beta_damp: float, dt: float):
-    """theta'' + sin(theta) + beta theta' = 0 at interior points.
-
-    Residual evaluated at grid indices j = 1..m-2 (interior); the FD stencil at
-    the very first interior index j=1 is dropped as in the paper (j = 2..m-1).
-    """
+    """theta'' + sin(theta) + beta theta' = 0 at all interior grid points."""
 
     def residual(f0: torch.Tensor) -> torch.Tensor:
-        fpp = second_derivative(f0, -1, dt)  # (S, m-2) at j=1..m-2
-        fp = first_derivative(f0, -1, dt)  # (S, m-2)
-        f = _trim(f0, -1, 1)  # (S, m-2)
-        r = fpp + torch.sin(f) + beta_damp * fp
-        return r[:, 1:]  # drop j=1 -> evaluate at j=2..m-2 (paper: j=2..m-1)
+        fpp = second_derivative(f0, -1, dt)  # centres 1..m-2 (0-based)
+        fp = first_derivative(f0, -1, dt)
+        f = f0[..., 1:-1]
+
+        return fpp + torch.sin(f) + beta_damp * fp
 
     return residual
 

@@ -22,7 +22,12 @@ def log_snr(t: torch.Tensor, beta0: float = 1e-5, beta1: float = 10.0) -> torch.
 
 
 def time_grid(
-    num_steps: int, beta0: float = 1e-5, beta1: float = 10.0, device=None, dtype=None
+    num_steps: int,
+    beta0: float = 1e-5,
+    beta1: float = 10.0,
+    tau_end: float = 1e-3,
+    device=None,
+    dtype=None,
 ) -> torch.Tensor:
     """Decreasing grid 1 = t0 > t1 > ... > tT ~ 0, uniform in log-SNR (Appendix F.2).
 
@@ -32,14 +37,14 @@ def time_grid(
         torch.tensor(1.0, device=device, dtype=dtype or torch.float64), beta0, beta1
     )
     s_lo = log_snr(
-        torch.tensor(1e-4, device=device, dtype=dtype or torch.float64), beta0, beta1
+        torch.tensor(tau_end, device=device, dtype=dtype or torch.float64), beta0, beta1
     )
     # grid uniform in log-SNR from t=1 (low SNR) down to t~0 (high SNR)
     s = torch.linspace(
         float(s_hi), float(s_lo), num_steps + 1, device=device, dtype=dtype
     )
     # invert: given target log-SNR s, solve for t by bisection on [1e-6, 1]
-    lo = torch.full_like(s, 1e-6)
+    lo = torch.full_like(s, tau_end)
     hi = torch.ones_like(s)
     for _ in range(60):
         mid = 0.5 * (lo + hi)

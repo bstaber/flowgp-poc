@@ -1,6 +1,7 @@
 """Figure 1a reproduction: FLOWGP enforcing the damped pendulum constraint
 theta'' + sin(theta) + 0.2 theta' = 0, using the paper's *plotting* settings
-(App. H.2): sigma^2 = 0.15^2, grid m = 250, 25 predictive samples.
+(App. H.2): grid m = 250, 25 predictive samples. Observations follow PHYSS:
+noise standard deviation 0.01 on the first 200 trajectory points.
 
 Two panels like Fig. 1a: left = GP posterior samples conditioned on noisy
 observations; right = FLOWGP samples additionally obeying the ODE.
@@ -16,6 +17,7 @@ import matplotlib
 matplotlib.use("Agg")
 import gpytorch
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 
 from flowgp import GaussianResidual, from_gpytorch_posterior, pendulum_residual
@@ -24,40 +26,42 @@ torch.set_default_dtype(torch.float64)
 torch.manual_seed(7)
 
 BETA_DAMP = 0.2
-T_HORIZON = 30.0
-SIGMA2 = 0.15**2  # qualitative/plotting setting (App. H.2)
-SIGMA = SIGMA2**0.5
+PHYSS_DT = 0.03
+PHYSS_N = 1000
+T_HORIZON = PHYSS_DT * (PHYSS_N - 1)
+PHYSS_SIGMA = 0.15
+SIGMA2 = PHYSS_SIGMA**2
+SIGMA = PHYSS_SIGMA
 M = 250  # plotting grid
 N_SAMPLES = 25
 
 
-def solve_pendulum(n_grid=4000, theta0=2.0):
-    dt = T_HORIZON / (n_grid - 1)
-
-    def deriv(y):
-        return torch.stack([y[1], -torch.sin(y[0]) - BETA_DAMP * y[1]])
-
-    ys = torch.zeros(n_grid, 2)
-    ys[0] = torch.tensor([theta0, 0.0])
-    for i in range(n_grid - 1):
-        y = ys[i]
-        k1 = deriv(y)
-        k2 = deriv(y + dt / 2 * k1)
-        k3 = deriv(y + dt / 2 * k2)
-        k4 = deriv(y + dt * k3)
-        ys[i + 1] = y + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-    return torch.linspace(0, T_HORIZON, n_grid), ys[:, 0]
+def solve_pendulum():
+    """Reproduce PHYSS's Euler-generated trajectory."""
+    state = torch.tensor([3 * torch.pi / 4, 0.0])
+    states = torch.zeros(PHYSS_N, 2)
+    states[0] = state
+    for i in range(PHYSS_N - 1):
+        theta, theta_dot = state
+        state = state + PHYSS_DT * torch.stack(
+            [theta_dot, -torch.sin(theta) - BETA_DAMP * theta_dot]
+        )
+        states[i + 1] = state
+    return torch.arange(PHYSS_N) * PHYSS_DT, states[:, 0]
 
 
 class ExactGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super().__init__(train_x, train_y, likelihood)
+
         self.mean_module = gpytorch.means.ConstantMean()
+
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
 
     def forward(self, x):
         return gpytorch.distributions.MultivariateNormal(
-            self.mean_module(x), self.covar_module(x)
+            self.mean_module(x),
+            self.covar_module(x),
         )
 
 
@@ -66,9 +70,9 @@ def fit_gp(train_x, train_y):
     best = None
     for seed in range(5):
         torch.manual_seed(seed)
-        likelihood = gpytorch.likelihoods.GaussianLikelihood(
-            noise_constraint=gpytorch.constraints.Interval(SIGMA2 / 2, SIGMA2 * 2)
-        )
+        likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        likelihood.noise = SIGMA2
+        likelihood.raw_noise.requires_grad_(False)
         likelihood.noise = SIGMA2
         model = ExactGPModel(train_x, train_y, likelihood)
         model.covar_module.base_kernel.lengthscale = 0.05 + 0.4 * torch.rand(1).item()
@@ -90,18 +94,19 @@ def fit_gp(train_x, train_y):
 
 
 def main():
-    _, theta_all = solve_pendulum()
+    t_all, theta_all = solve_pendulum()
 
-    # irregular training observations with the plotting-level noise, restricted
-    # to the early window t < 6 (as in the paper's Figure 1a): beyond that the
-    # trajectory must be extrapolated by the physics constraint alone
-    n_train = 12
-    train_t = torch.sort(torch.rand(n_train) * 6.0)[0]
-    idx = torch.round(train_t / T_HORIZON * 3999).long()
-    train_y = theta_all[idx] + SIGMA * torch.randn(n_train)
+    # Match PHYSS: add noise to the full trajectory, then select 20 points from
+    # the first 200 samples using the same NumPy random-number sequence.
+    rng = np.random.RandomState(0)
+    train_y_all = theta_all[:200].numpy() + PHYSS_SIGMA * rng.randn(200)
+    rng.randn(PHYSS_N - 200)  # consume PHYSS's test-noise stream
+    train_idx = rng.choice(np.arange(200), 20)
+    train_t = t_all[train_idx]
+    train_y = torch.from_numpy(train_y_all[train_idx])
 
     grid_t = torch.linspace(0, T_HORIZON, M)
-    g_idx = torch.round(grid_t / T_HORIZON * 3999).long()
+    g_idx = torch.round(grid_t / T_HORIZON * (PHYSS_N - 1)).long()
 
     # ---- left panel: GP posterior samples (unconstrained, non-physical) ----
     X = (train_t / T_HORIZON).reshape(-1, 1)
@@ -109,7 +114,8 @@ def main():
     model.eval()
     likelihood.eval()
     G = (grid_t / T_HORIZON).reshape(-1, 1)
-    with torch.no_grad(), gpytorch.settings.fast_pred_var():
+    # with torch.no_grad(), gpytorch.settings.fast_pred_var():
+    with torch.no_grad():
         pred = model(G)
     mean, cov = pred.mean.detach(), pred.covariance_matrix.detach()
     chol = torch.linalg.cholesky(cov + 1e-8 * torch.eye(M, dtype=torch.float64))
@@ -118,8 +124,10 @@ def main():
 
     # ---- right panel: FLOWGP samples guided by the pendulum residual ----
     dt = T_HORIZON / (M - 1)
-    physics = GaussianResidual(pendulum_residual(BETA_DAMP, dt), sigma=1e-3)
-    sampler = from_gpytorch_posterior(pred, physics, num_steps=1000, num_mc=5)
+    physics = GaussianResidual(pendulum_residual(BETA_DAMP, dt), sigma=1e-10)
+    sampler = from_gpytorch_posterior(
+        pred, physics, num_steps=1000, num_mc=100, v_max=100.0
+    )
     samples = sampler.sample(batch_shape=N_SAMPLES)
 
     # ---- predictive RMSE (vs truth), overall and no-data (t>6) ----
