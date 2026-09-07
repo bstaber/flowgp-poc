@@ -4,13 +4,8 @@ from .likelihoods import BoundedMonotonic, EqualityConstraints, ProbitInequality
 from .physics import (
     GaussianResidual,
     ProductLikelihood,
-    allen_cahn_residual,
-    burgers_residual,
-    dirichlet_rows_residual,
-    evaluate_samples_at_test_points,
     first_derivative,
     pendulum_residual,
-    rmse_nlpd,
     second_derivative,
 )
 from .sampler import ConditioningLikelihood, FlowGPSampler, from_gpytorch_posterior
@@ -24,16 +19,11 @@ __all__ = [
     "GaussianResidual",
     "ProbitInequality",
     "ProductLikelihood",
-    "allen_cahn_residual",
     "alpha",
     "beta_schedule",
-    "burgers_residual",
-    "dirichlet_rows_residual",
-    "evaluate_samples_at_test_points",
     "first_derivative",
     "from_gpytorch_posterior",
     "pendulum_residual",
-    "rmse_nlpd",
     "second_derivative",
     "time_grid",
 ]
